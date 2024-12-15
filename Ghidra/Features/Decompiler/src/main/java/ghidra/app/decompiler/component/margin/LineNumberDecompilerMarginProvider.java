@@ -133,26 +133,18 @@ public class LineNumberDecompilerMarginProvider extends JPanel
 		BigInteger startIdx = pixmap.getIndex(visible.y);
 		BigInteger endIdx = pixmap.getIndex(visible.y + visible.height);
 		int ascent = g.getFontMetrics().getMaxAscent();
-		int arrowSize = ascent / 2;
 		Map<Integer, Boolean> linesIndexes = decompilerPanel.getLinesWithOpeningBraces();
-
 
 		for (BigInteger i = startIdx; i.compareTo(endIdx) <= 0; i = i.add(BigInteger.ONE)) {
 			String text = i.add(BigInteger.ONE).toString();
 			GraphicsUtils.drawString(this, g, text, leftEdge, pixmap.getPixel(i) + ascent);
 
 			if (linesIndexes.containsKey(i.intValue())) {
-				int y = pixmap.getPixel(i) + ascent;
-				g.setColor(Color.GRAY);
 				if (linesIndexes.get(i.intValue())) {
-					y -= arrowSize / 2;
-					g.drawLine(rightEdge, y, rightEdge - arrowSize / 2, y - arrowSize / 2);
-					g.drawLine(rightEdge, y, rightEdge - arrowSize / 2, y + arrowSize / 2);
+					GraphicsUtils.drawString(this, g, "+", rightEdge, pixmap.getPixel(i) + ascent);
 				} else {
-					g.drawLine(rightEdge, y, rightEdge - arrowSize / 2, y - arrowSize / 2);
-					g.drawLine(rightEdge, y, rightEdge + arrowSize / 2, y - arrowSize / 2);
+					GraphicsUtils.drawString(this, g, "-", rightEdge, pixmap.getPixel(i) + ascent);
 				}
-				g.setColor(Color.BLACK);
 			}
 		}
 	}
