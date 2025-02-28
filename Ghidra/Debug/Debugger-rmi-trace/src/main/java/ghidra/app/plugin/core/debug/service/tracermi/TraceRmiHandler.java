@@ -31,14 +31,11 @@ import org.apache.commons.lang3.ArrayUtils;
 import com.google.protobuf.ByteString;
 
 import db.Transaction;
+import generic.theme.GIcon;
 import ghidra.app.plugin.core.debug.disassemble.DebuggerDisassemblerPlugin;
 import ghidra.app.plugin.core.debug.disassemble.TraceDisassembleCommand;
 import ghidra.app.services.DebuggerControlService;
 import ghidra.app.services.DebuggerTraceManagerService;
-import ghidra.dbg.target.schema.TargetObjectSchema.SchemaName;
-import ghidra.dbg.target.schema.XmlSchemaContext;
-import ghidra.dbg.util.PathPattern;
-import ghidra.dbg.util.PathUtils;
 import ghidra.debug.api.progress.CloseableTaskMonitor;
 import ghidra.debug.api.target.ActionName;
 import ghidra.debug.api.target.Target;
@@ -60,13 +57,16 @@ import ghidra.trace.model.guest.TracePlatform;
 import ghidra.trace.model.memory.*;
 import ghidra.trace.model.target.*;
 import ghidra.trace.model.target.TraceObject.ConflictResolution;
+import ghidra.trace.model.target.path.*;
+import ghidra.trace.model.target.schema.TraceObjectSchema.SchemaName;
+import ghidra.trace.model.target.schema.XmlSchemaContext;
 import ghidra.trace.model.time.TraceSnapshot;
 import ghidra.util.*;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.exception.DuplicateFileException;
 
 public class TraceRmiHandler extends AbstractTraceRmiConnection {
-	public static final String VERSION = "11.2";
+	public static final String VERSION = "11.3";
 
 	protected static class VersionMismatchError extends TraceRmiError {
 		public VersionMismatchError(String remote) {
@@ -90,9 +90,15 @@ public class TraceRmiHandler extends AbstractTraceRmiConnection {
 	}
 
 	protected static class InvalidObjPathError extends TraceRmiError {
+		public InvalidObjPathError(String path) {
+			super(path);
+		}
 	}
 
 	protected static class NoSuchAddressSpaceError extends TraceRmiError {
+		public NoSuchAddressSpaceError(String name) {
+			super(name);
+		}
 	}
 
 	protected static class InvalidSchemaError extends TraceRmiError {
@@ -292,8 +298,8 @@ public class TraceRmiHandler extends AbstractTraceRmiConnection {
 		synchronized (openTxes) {
 			while (!openTxes.isEmpty()) {
 				Tid nextKey = openTxes.keySet().iterator().next();
-				OpenTx open = openTxes.remove(nextKey);
-				open.tx.close();
+				OpenTx openTx = openTxes.remove(nextKey);
+				openTx.tx.close();
 			}
 		}
 
@@ -309,7 +315,7 @@ public class TraceRmiHandler extends AbstractTraceRmiConnection {
 					// OK. Move on
 				}
 			}
-			open.trace.release(this);
+			open.dispose(this);
 		}
 		closed.complete(null);
 		plugin.listeners.invoke().disconnected(this);
@@ -652,12 +658,12 @@ public class TraceRmiHandler extends AbstractTraceRmiConnection {
 				.getCompilerSpecByID(new CompilerSpecID(compiler.getId()));
 	}
 
-	protected static TraceObjectKeyPath toKeyPath(ObjPath path) {
-		return TraceObjectKeyPath.parse(path.getPath());
+	protected static KeyPath toKeyPath(ObjPath path) {
+		return KeyPath.parse(path.getPath());
 	}
 
 	protected static PathPattern toPathPattern(ObjPath path) {
-		return new PathPattern(PathUtils.parse(path.getPath()));
+		return PathFilter.parse(path.getPath());
 	}
 
 	protected static Lifespan toLifespan(Span span) {
@@ -686,7 +692,7 @@ public class TraceRmiHandler extends AbstractTraceRmiConnection {
 		return ObjSpec.newBuilder().setId(object.getKey()).build();
 	}
 
-	protected static ObjPath makeObjPath(TraceObjectKeyPath path) {
+	protected static ObjPath makeObjPath(KeyPath path) {
 		return ObjPath.newBuilder().setPath(path.toString()).build();
 	}
 
@@ -840,7 +846,7 @@ public class TraceRmiHandler extends AbstractTraceRmiConnection {
 	protected ReplyCloseTrace handleCloseTrace(RequestCloseTrace req) {
 		OpenTrace open = requireOpenTrace(req.getOid());
 		openTraces.removeById(open.doId);
-		open.trace.release(this);
+		open.dispose(this);
 		return ReplyCloseTrace.getDefaultInstance();
 	}
 
@@ -968,13 +974,27 @@ public class TraceRmiHandler extends AbstractTraceRmiConnection {
 			Msg.error(this, "Back-end debugger aborted a transaction!");
 			tx.tx.abortOnClose();
 		}
-		tx.tx.close();
+
 		OpenTrace open = requireOpenTrace(tx.txId.doId);
 		if (!tx.undoable) {
-			open.trace.clearUndo();
+			/**
+			 * The listener is invoked via runLater, so we must do the same here, so that events are
+			 * processed in the order emitted.
+			 */
+			Swing.runLater(() -> open.txListener.markNotUndoable());
 		}
-		// TODO: Check for other transactions on the same trace?
-		open.trace.setEventsEnabled(true);
+
+		tx.tx.close();
+
+		final boolean restoreEvents;
+		synchronized (openTxes) {
+			restoreEvents = openTxes.keySet()
+					.stream()
+					.noneMatch(id -> id.doId.domObjId == req.getOid().getId());
+		}
+		if (restoreEvents) {
+			open.trace.setEventsEnabled(true);
+		}
 		return ReplyEndTx.getDefaultInstance();
 	}
 
@@ -1028,7 +1048,9 @@ public class TraceRmiHandler extends AbstractTraceRmiConnection {
 		}
 		for (Method m : req.getMethodsList()) {
 			RemoteMethod rm = new RecordRemoteMethod(this, m.getName(),
-				ActionName.name(m.getAction()), m.getDisplay(), m.getDescription(),
+				ActionName.name(m.getAction()), m.getDisplay(),
+				m.getIcon().isBlank() ? null : new GIcon(m.getIcon()), m.getOkText(),
+				m.getDescription(),
 				m.getParametersList()
 						.stream()
 						.collect(Collectors.toMap(MethodParameter::getName, this::makeParameter)),
@@ -1276,7 +1298,7 @@ public class TraceRmiHandler extends AbstractTraceRmiConnection {
 	@Override
 	public void forceCloseTrace(Trace trace) {
 		OpenTrace open = openTraces.removeByTrace(trace);
-		open.trace.release(this);
+		open.dispose(this);
 	}
 
 	@Override

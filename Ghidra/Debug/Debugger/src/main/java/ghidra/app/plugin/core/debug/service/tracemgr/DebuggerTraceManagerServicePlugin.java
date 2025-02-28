@@ -39,7 +39,6 @@ import ghidra.app.services.*;
 import ghidra.app.services.DebuggerControlService.ControlModeChangeListener;
 import ghidra.async.*;
 import ghidra.async.AsyncConfigFieldCodec.BooleanAsyncConfigFieldCodec;
-import ghidra.dbg.target.TargetObject;
 import ghidra.debug.api.control.ControlMode;
 import ghidra.debug.api.platform.DebuggerPlatformMapper;
 import ghidra.debug.api.target.Target;
@@ -61,7 +60,7 @@ import ghidra.trace.model.guest.TracePlatform;
 import ghidra.trace.model.program.TraceProgramView;
 import ghidra.trace.model.program.TraceVariableSnapProgramView;
 import ghidra.trace.model.target.TraceObject;
-import ghidra.trace.model.target.TraceObjectKeyPath;
+import ghidra.trace.model.target.path.KeyPath;
 import ghidra.trace.model.thread.TraceThread;
 import ghidra.trace.model.time.TraceSnapshot;
 import ghidra.trace.model.time.schedule.TraceSchedule;
@@ -120,7 +119,7 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 			Target target = current.getTarget();
 			if (supportsFocus(target)) {
 				// TODO: Same for stack frame? I can't imagine it's as common as this....
-				TraceObjectKeyPath focus = target.getFocus();
+				KeyPath focus = target.getFocus();
 				if (focus == null) {
 					return;
 				}
@@ -257,7 +256,7 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 				return;
 			}
 			DebuggerCoordinates coords = current;
-			TraceObjectKeyPath focus = curTarget.getFocus();
+			KeyPath focus = curTarget.getFocus();
 			if (focus != null) {
 				coords = coords.path(focus);
 			}
@@ -288,7 +287,6 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 		new ForFollowPresentListener();
 
 	protected DebuggerCoordinates current = DebuggerCoordinates.NOWHERE;
-	protected TargetObject curObj;
 	@AutoConfigStateField(codec = BooleanAsyncConfigFieldCodec.class)
 	protected final AsyncReference<Boolean, Void> saveTracesByDefault = new AsyncReference<>(true);
 	@AutoConfigStateField(codec = BooleanAsyncConfigFieldCodec.class)
@@ -733,9 +731,9 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 			return CompletableFuture.completedFuture(found);
 		}
 		if (emulationService == null) {
-			throw new IllegalStateException(
-				"Cannot navigate to coordinates with execution schedules, " +
-					"because the emulation service is not available.");
+			Msg.warn(this, "Cannot navigate to coordinates with execution schedules, " +
+				"because the emulation service is not available.");
+			return CompletableFuture.completedFuture(null);
 		}
 		return emulationService.backgroundEmulate(coordinates.getPlatform(), coordinates.getTime());
 	}
@@ -748,6 +746,9 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 			return AsyncUtils.nil();
 		}
 		return materialize(coordinates).thenAcceptAsync(snap -> {
+			if (snap == null) {
+				return; // The tool is probably closing
+			}
 			if (!coordinates.equals(current)) {
 				return; // We navigated elsewhere before emulation completed
 			}
@@ -1216,7 +1217,7 @@ public class DebuggerTraceManagerServicePlugin extends Plugin
 	}
 
 	@Override
-	public DebuggerCoordinates resolvePath(TraceObjectKeyPath path) {
+	public DebuggerCoordinates resolvePath(KeyPath path) {
 		return current.path(path);
 	}
 
